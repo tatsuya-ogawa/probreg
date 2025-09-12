@@ -1,38 +1,40 @@
-[tool.poetry]
+[project]
 name = "probreg"
 version = "0.3.8"
+readme = "README.md"
 description = "Probablistic point cloud resitration algorithms"
-authors = ["nekanat <nekanat.stock@gmail.com>"]
+authors = [{ name = "nekanat", email = "nekanat.stock@gmail.com" }]
+requires-python = ">=3.9,<4.0"
 license = "MIT"
+dependencies = [
+    "pybind11>=2.6.2,<3",
+    "six>=1.15.0,<2",
+    "scipy>=1.6.0,<2",
+    "transforms3d>=0.4.0,<0.5",
+    "scikit-learn~=1.0",
+    "matplotlib>=3.3.3,<4",
+    "open3d>=0.19.0",
+    "pyyaml~=6.0",
+    "addict>=2.4.0,<3",
+    "pandas>=2.0.0,<3",
+]
 
-[tool.poetry.dependencies]
-python = ">=3.9,<4.0"
-pybind11 = "^2.6.2"
-six = "^1.15.0"
-scipy = "^1.6.0"
-transforms3d = "^0.4.0"
-scikit-learn = "^1.0"
-matplotlib = "^3.3.3"
-open3d = "0.18.0"
-dq3d = {version = "^0.3.6", optional = true}
-cupy = {version = "^12.0.0", optional = true}
-pyyaml = "^6.0"
-addict = "^2.4.0"
-pandas = "^2.0.0"
+[project.optional-dependencies]
+experimental = ["dq3d>=0.3.8,<0.4"]
+gpu = ["cupy>=12.0.0,<13"]
 
-[tool.poetry.group.dev.dependencies]
-Sphinx = "^3.4.3"
-flake8 = "^3.8.4"
-sphinx-rtd-theme = "^0.5.1"
-twine = "^3.3.0"
-setuptools = "^52.0.0"
-isort = "^5.9.3"
-black = "22.3.0"
+[dependency-groups]
+dev = [
+    "Sphinx>=3.4.3,<4",
+    "flake8>=3.8.4,<4",
+    "sphinx-rtd-theme>=0.5.1,<0.6",
+    "twine>=3.3.0,<4",
+    "setuptools>=52.0.0,<53",
+    "isort>=5.9.3,<6",
+    "black==22.3.0",
+]
 
 [build-system]
 requires = ["poetry-core>=1.0.0", "setuptools", "pybind11"]
 build-backend = "setuptools.build_meta"
 
-[tool.poetry.extras]
-experimental = ["dq3d"]
-gpu = ["cupy"]
