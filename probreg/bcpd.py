@@ -35,8 +35,9 @@ class BayesianCoherentPointDrift:
         source (numpy.ndarray, optional): Source point cloud data.
     """
 
-    def __init__(self, source=None):
+    def __init__(self, source=None, use_debias=False):
         self._source = source
+        self._use_debias = use_debias
         self._tf_type = None
         self._callbacks = []
 
@@ -58,14 +59,20 @@ class BayesianCoherentPointDrift:
         pmat = np.exp(-pmat / (2.0 * sigma2))
         pmat /= (2.0 * np.pi * sigma2) ** (dim * 0.5)
         pmat = pmat.T
-        pmat *= np.exp(-(scale**2) / (2 * sigma2) * np.diag(sigma_mat) * dim)
+        if self._use_debias and sigma_mat is not None:
+            pmat *= np.exp(-(scale**2) / (2 * sigma2) * np.diag(sigma_mat) * dim)
         pmat *= (1.0 - w) * alpha
-        den = w / target.shape[0] + np.sum(pmat, axis=1)
+        bb_range = target.max(axis=0) - target.min(axis=0)
+        bb_range = np.maximum(bb_range, 1e-10)
+        volume = np.prod(bb_range)
+        outlier_term = w / volume
+        den = outlier_term + np.sum(pmat, axis=1)
         den[den == 0] = np.finfo(np.float32).eps
         pmat = np.divide(pmat.T, den)
 
         nu_d = np.sum(pmat, axis=0)
         nu = np.sum(pmat, axis=1)
+        nu = np.maximum(nu, 1e-20)
         nu_inv = 1.0 / np.kron(nu, np.ones(dim))
         px = np.dot(np.kron(pmat, np.identity(dim)), target.ravel())
         x_hat = np.multiply(px, nu_inv).reshape(-1, dim)
@@ -101,32 +108,39 @@ class BayesianCoherentPointDrift:
 
 
 class CombinedBCPD(BayesianCoherentPointDrift):
-    def __init__(self, source=None, lmd=2.0, k=1.0e20, gamma=1.0):
-        super(CombinedBCPD, self).__init__(source)
+    def __init__(self, source=None, lmd=2.0, k=1.0e20, gamma=1.0, beta=1.0, kernel="imq", use_debias=False):
+        super(CombinedBCPD, self).__init__(source, use_debias)
         self._tf_type = tf.CombinedTransformation
         self.lmd = lmd
         self.k = k
         self.gamma = gamma
+        self.beta = beta
+        self.kernel = kernel
 
     def _initialize(self, target):
         m, dim = self._source.shape
-        self.gmat = mu.inverse_multiquadric_kernel(self._source, self._source)
+        if self.kernel == "imq":
+            self.gmat = mu.inverse_multiquadric_kernel(self._source, self._source, self.beta)
+        elif self.kernel == "rbf":
+            self.gmat = mu.rbf_kernel(self._source, self._source, self.beta)
+        else:
+            raise ValueError("Invalid kernel type: %s" % self.kernel)
         self.gmat_inv = np.linalg.inv(self.gmat)
-        sigma2 = self.gamma * mu.squared_kernel_sum(self._source, target)
+        sigma2 = (self.gamma ** 2) * mu.squared_kernel_sum(self._source, target)
         q = 1.0 + target.shape[0] * dim * 0.5 * np.log(sigma2)
         return MstepResult(self._tf_type(np.identity(dim), np.zeros(dim)), None, np.identity(m), 1.0 / m, sigma2)
 
     def maximization_step(self, target, rigid_trans, estep_res, sigma2_p=None):
         return self._maximization_step(
-            self._source, target, rigid_trans, estep_res, self.gmat_inv, self.lmd, self.k, sigma2_p
+            self._source, target, rigid_trans, estep_res, self.gmat_inv, self.lmd, self.k, sigma2_p, self._use_debias
         )
 
     @staticmethod
-    def _maximization_step(source, target, rigid_trans, estep_res, gmat_inv, lmd, k, sigma2_p=None):
+    def _maximization_step(source, target, rigid_trans, estep_res, gmat_inv, lmd, k, sigma2_p=None, use_debias=False):
         nu_d, nu, n_p, px, x_hat = estep_res
         dim = source.shape[1]
         m = source.shape[0]
-        s2s2 = rigid_trans.scale**2 / (sigma2_p**2)
+        s2s2 = rigid_trans.scale**2 / sigma2_p
         sigma_mat_inv = lmd * gmat_inv + s2s2 * np.diag(nu)
         sigma_mat = np.linalg.inv(sigma_mat_inv)
         residual = rigid_trans.inverse().transform(x_hat) - source
@@ -140,19 +154,24 @@ class CombinedBCPD(BayesianCoherentPointDrift):
         u_m = np.sum(nu * u_hat.T, axis=1) / n_p
         u_hm = u_hat - u_m
         s_xu = np.matmul(np.multiply(nu, (x_hat - x_m).T), u_hm) / n_p
-        s_uu = np.matmul(np.multiply(nu, u_hm.T), u_hm) / n_p + sigma2_m * np.identity(dim)
+        s_uu = np.matmul(np.multiply(nu, u_hm.T), u_hm) / n_p
+        if use_debias:
+            s_uu += sigma2_m * np.identity(dim)
         phi, _, psih = np.linalg.svd(s_xu, full_matrices=True)
         c = np.ones(dim)
         c[-1] = np.linalg.det(np.dot(phi, psih))
         rot = np.matmul(phi * c, psih)
-        tr_rsxu = np.trace(np.matmul(rot, s_xu))
+        tr_rsxu = np.sum(rot * s_xu)
         scale = tr_rsxu / np.trace(s_uu)
         t = x_m - scale * np.dot(rot, u_m)
-        y_hat = rigid_trans.transform(source + v_hat)
+        y_hat = scale * np.dot(u_hat, rot.T) + t
         s1 = np.dot(target.ravel(), np.kron(nu_d, np.ones(dim)) * target.ravel())
         s2 = np.dot(px.ravel(), y_hat.ravel())
         s3 = np.dot(y_hat.ravel(), np.kron(nu, np.ones(dim)) * y_hat.ravel())
-        sigma2 = (s1 - 2.0 * s2 + s3) / (n_p * dim) + scale**2 * sigma2_m
+        sigma2 = (s1 - 2.0 * s2 + s3) / (n_p * dim)
+        if use_debias:
+            sigma2 += rigid_trans.scale**2 * sigma2_m
+        sigma2 = max(abs(sigma2), np.finfo(np.float64).eps)
         return MstepResult(tf.CombinedTransformation(rot, t, scale, v_hat), u_hat, sigma_mat, alpha, sigma2)
 
 
