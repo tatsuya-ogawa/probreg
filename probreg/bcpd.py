@@ -59,7 +59,6 @@ class BayesianCoherentPointDrift:
         pmat /= (2.0 * np.pi * sigma2) ** (dim * 0.5)
         pmat = pmat.T
         pmat *= (1.0 - w) * alpha
-        # Outlier term: uniform distribution over bounding box volume (matching C code)
         bb_range = target.max(axis=0) - target.min(axis=0)
         bb_range = np.maximum(bb_range, 1e-10)
         volume = np.prod(bb_range)
