@@ -35,8 +35,9 @@ class BayesianCoherentPointDrift:
         source (numpy.ndarray, optional): Source point cloud data.
     """
 
-    def __init__(self, source=None):
+    def __init__(self, source=None, use_debias=False):
         self._source = source
+        self._use_debias = use_debias
         self._tf_type = None
         self._callbacks = []
 
@@ -58,6 +59,8 @@ class BayesianCoherentPointDrift:
         pmat = np.exp(-pmat / (2.0 * sigma2))
         pmat /= (2.0 * np.pi * sigma2) ** (dim * 0.5)
         pmat = pmat.T
+        if self._use_debias and sigma_mat is not None:
+            pmat *= np.exp(-(scale**2) / (2 * sigma2) * np.diag(sigma_mat) * dim)
         pmat *= (1.0 - w) * alpha
         bb_range = target.max(axis=0) - target.min(axis=0)
         bb_range = np.maximum(bb_range, 1e-10)
@@ -105,8 +108,8 @@ class BayesianCoherentPointDrift:
 
 
 class CombinedBCPD(BayesianCoherentPointDrift):
-    def __init__(self, source=None, lmd=2.0, k=1.0e20, gamma=1.0, beta=1.0, kernel="imq"):
-        super(CombinedBCPD, self).__init__(source)
+    def __init__(self, source=None, lmd=2.0, k=1.0e20, gamma=1.0, beta=1.0, kernel="imq", use_debias=False):
+        super(CombinedBCPD, self).__init__(source, use_debias)
         self._tf_type = tf.CombinedTransformation
         self.lmd = lmd
         self.k = k
@@ -129,11 +132,11 @@ class CombinedBCPD(BayesianCoherentPointDrift):
 
     def maximization_step(self, target, rigid_trans, estep_res, sigma2_p=None):
         return self._maximization_step(
-            self._source, target, rigid_trans, estep_res, self.gmat_inv, self.lmd, self.k, sigma2_p
+            self._source, target, rigid_trans, estep_res, self.gmat_inv, self.lmd, self.k, sigma2_p, self._use_debias
         )
 
     @staticmethod
-    def _maximization_step(source, target, rigid_trans, estep_res, gmat_inv, lmd, k, sigma2_p=None):
+    def _maximization_step(source, target, rigid_trans, estep_res, gmat_inv, lmd, k, sigma2_p=None, use_debias=False):
         nu_d, nu, n_p, px, x_hat = estep_res
         dim = source.shape[1]
         m = source.shape[0]
@@ -152,6 +155,8 @@ class CombinedBCPD(BayesianCoherentPointDrift):
         u_hm = u_hat - u_m
         s_xu = np.matmul(np.multiply(nu, (x_hat - x_m).T), u_hm) / n_p
         s_uu = np.matmul(np.multiply(nu, u_hm.T), u_hm) / n_p
+        if use_debias:
+            s_uu += sigma2_m * np.identity(dim)
         phi, _, psih = np.linalg.svd(s_xu, full_matrices=True)
         c = np.ones(dim)
         c[-1] = np.linalg.det(np.dot(phi, psih))
@@ -164,6 +169,8 @@ class CombinedBCPD(BayesianCoherentPointDrift):
         s2 = np.dot(px.ravel(), y_hat.ravel())
         s3 = np.dot(y_hat.ravel(), np.kron(nu, np.ones(dim)) * y_hat.ravel())
         sigma2 = (s1 - 2.0 * s2 + s3) / (n_p * dim)
+        if use_debias:
+            sigma2 += rigid_trans.scale**2 * sigma2_m
         sigma2 = max(abs(sigma2), np.finfo(np.float64).eps)
         return MstepResult(tf.CombinedTransformation(rot, t, scale, v_hat), u_hat, sigma_mat, alpha, sigma2)
 
